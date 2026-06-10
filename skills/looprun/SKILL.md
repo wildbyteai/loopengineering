@@ -1,5 +1,5 @@
 ---
-name: loop
+name: looprun
 description: "启动 Loop Engineering 循环来处理复杂任务。当用户提到 '用loop处理'、'loop engineering'、'自动循环'、'多agent协作'、'对抗验证'、或需要复杂多步骤任务处理时使用。也适用于：需要规划拆分的任务、需要独立验证的质量敏感任务、需要反复迭代直到成功的任务。"
 argument-hint: <任务目标>
 allowed-tools: [Read, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList]

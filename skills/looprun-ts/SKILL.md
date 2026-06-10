@@ -1,5 +1,5 @@
 ---
-name: loop-run
+name: looprun-ts
 description: "运行 LoopEngineering-Core TypeScript 系统。当用户想要使用完整的 TypeScript 实现（带存储、记忆持久化、监控报告）时使用。需要先 npm install。"
 argument-hint: <任务目标>
 allowed-tools: [Read, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList]

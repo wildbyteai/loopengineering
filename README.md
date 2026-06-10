@@ -19,7 +19,7 @@ npm install
 ln -s $(pwd) ~/.claude/plugins/loopengineering
 ```
 
-安装后，在 Claude Code 中输入 `/loop` 即可启动 loop。
+安装后，在 Claude Code 中输入 `/looprun` 即可启动 loop。
 
 ### 作为独立工具使用
 
@@ -38,14 +38,14 @@ npm start -- "构建一个带认证的 REST API"
 
 ## 使用方式
 
-### `/loop` — Claude Code 内置 skill
+### `/looprun` — Claude Code 内置 skill
 
 在 Claude Code 中直接使用：
 
 ```
-/loop 构建一个带用户认证和 CRUD 的 REST API
-/loop 重构 auth 模块，添加单元测试
-/loop 分析这段代码的性能瓶颈并给出优化方案
+/looprun 构建一个带用户认证和 CRUD 的 REST API
+/looprun 重构 auth 模块，添加单元测试
+/looprun 分析这段代码的性能瓶颈并给出优化方案
 ```
 
 `/loop` 会自动：
@@ -55,12 +55,12 @@ npm start -- "构建一个带认证的 REST API"
 4. **3 视角对抗验证**（correctness / completeness / robustness）
 5. 记忆沉淀 + 监控报告
 
-### `/loop-run` — TypeScript 运行时
+### `/looprun-ts` — TypeScript 运行时
 
 如果你需要完整的持久化存储和监控：
 
 ```
-/loop-run 构建一个 CLI 工具
+/looprun-ts 构建一个 CLI 工具
 ```
 
 这会调用 TypeScript 实现，支持 JSON 文件持久化、跨会话记忆。
@@ -139,7 +139,7 @@ loopengineering/
 │   └── plugin.json        # 插件元数据
 ├── skills/
 │   ├── loop/
-│   │   └── SKILL.md       # /loop — Claude Code 内置 skill
+│   │   └── SKILL.md       # /looprun — Claude Code 内置 skill
 │   └── loop-run/
 │       └── SKILL.md       # /loop-run — TypeScript 运行时
 ├── src/
