@@ -1,0 +1,26 @@
+{
+  "name": "loopengineering-core",
+  "version": "1.0.0",
+  "description": "通用 Loop Engineering 系统 — 通过闭环机制实现任务的持续规划、执行、验证与优化",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "loop": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "tsx src/test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

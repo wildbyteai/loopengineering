@@ -1,0 +1,9 @@
+node_modules/
+dist/
+data/
+data-test/
+*.js.map
+*.d.ts
+!src/**/*.ts
+.env
+.env.local

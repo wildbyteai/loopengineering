@@ -1,0 +1,8 @@
+{
+  "name": "loopengineering",
+  "description": "Loop Engineering 系统 — 通过闭环机制实现任务的持续规划、执行、对抗验证与优化。将复杂任务交给自动化的 multi-agent loop 处理。",
+  "version": "1.0.0",
+  "author": {
+    "name": "LoopEngineering"
+  }
+}
