@@ -18,7 +18,8 @@ import { MonitorAgent } from '../agents/monitor.js'
 
 export interface LoopConfig {
   maxIterations?: number
-  maxConsecutiveFailures?: number
+  maxPlanningFailures?: number
+  maxTaskRetries?: number
   verbose?: boolean
   onIterationStart?: (iteration: number) => void
   onTaskComplete?: (taskId: string, result: TaskResult, feedback: Feedback) => void
@@ -32,6 +33,29 @@ interface AgentContext {
   goal: StandardGoal
   iteration: number
   loop_id: string
+}
+
+// DAG 拓扑排序：返回按依赖顺序排列的任务
+function topoSort(tasks: Task[]): Task[] {
+  const byId = new Map(tasks.map(t => [t.task_id, t]))
+  const visited = new Set<string>()
+  const result: Task[] = []
+
+  function visit(id: string) {
+    if (visited.has(id)) return
+    visited.add(id)
+    const task = byId.get(id)
+    if (!task) return
+    for (const dep of task.dependencies) {
+      visit(dep)
+    }
+    result.push(task)
+  }
+
+  for (const task of tasks) {
+    visit(task.task_id)
+  }
+  return result
 }
 
 export class LoopController {
@@ -51,7 +75,8 @@ export class LoopController {
     this.llm = llm
     this.config = {
       maxIterations: config.maxIterations ?? 10,
-      maxConsecutiveFailures: config.maxConsecutiveFailures ?? 3,
+      maxPlanningFailures: config.maxPlanningFailures ?? 3,
+      maxTaskRetries: config.maxTaskRetries ?? 2,
       verbose: config.verbose ?? true,
       onIterationStart: config.onIterationStart ?? (() => {}),
       onTaskComplete: config.onTaskComplete ?? (() => {}),
@@ -76,7 +101,7 @@ export class LoopController {
     this.log(`Goal: ${rawGoal}`)
     this.log(`${'='.repeat(60)}\n`)
 
-    // Step 1: GoalAgent — 标准化目标
+    // Step 1: GoalAgent
     this.log('[GoalAgent] Standardizing goal...')
     const goalResult = await this.goalAgent.run(
       { raw_goal: rawGoal },
@@ -90,7 +115,7 @@ export class LoopController {
     this.log(`[GoalAgent]   Criteria: ${goal.success_criteria.join(', ')}`)
 
     // 初始化 loop state
-    const loopState: LoopState = {
+    let loopState: LoopState = {
       loop_id: loopId,
       goal,
       iteration: 0,
@@ -102,94 +127,77 @@ export class LoopController {
     await this.store.set('loops', loopId, loopState)
 
     // Main loop
-    let consecutiveFailures = 0
+    let planningFailures = 0
 
     for (let iter = 1; iter <= this.config.maxIterations; iter++) {
-      loopState.iteration = iter
-      loopState.updated_at = new Date().toISOString()
+      loopState = { ...loopState, iteration: iter, updated_at: new Date().toISOString() }
       await this.store.set('loops', loopId, loopState)
 
       this.config.onIterationStart(iter)
       this.log(`\n--- Iteration ${iter}/${this.config.maxIterations} ---`)
 
-      // Step 2: PlannerAgent — 规划
+      // Step 2: PlannerAgent（带 DAG 拓扑排序）
       this.log('[PlannerAgent] Planning tasks...')
       const planResult = await this.plannerAgent.run({}, this.ctx(loopId, iter, goal))
       if (!planResult.success) {
         this.log(`[PlannerAgent] ✗ Failed: ${planResult.error}`)
-        consecutiveFailures++
-        if (consecutiveFailures >= this.config.maxConsecutiveFailures) {
-          return this.terminate(loopId, 'failed', iter, startedAt, 'Too many consecutive planning failures')
+        planningFailures++
+        if (planningFailures >= this.config.maxPlanningFailures) {
+          return this.terminate(loopId, 'failed', iter, startedAt, 'Too many consecutive planning failures', goal)
         }
         continue
       }
-      const tasks = planResult.data.tasks as Task[]
-      this.log(`[PlannerAgent] ✓ Planned ${tasks.length} tasks`)
+      planningFailures = 0
+
+      const rawTasks = planResult.data.tasks as Task[]
+      if (rawTasks.length === 0) {
+        this.log('[PlannerAgent] ⚠ No tasks generated — goal may already be satisfied')
+        return this.terminate(loopId, 'completed', iter, startedAt, undefined, goal)
+      }
+
+      const tasks = topoSort(rawTasks)
+      this.log(`[PlannerAgent] ✓ Planned ${tasks.length} tasks (topologically sorted)`)
+      for (const t of tasks) {
+        this.log(`  ${t.task_id}: ${t.description} (deps: [${t.dependencies.join(', ')}])`)
+      }
 
       // Step 3: 执行 + 验证每个任务
       let iterFailures = 0
+      const iterTasks: string[] = []
+
       for (const task of tasks) {
+        iterTasks.push(task.task_id)
         this.log(`\n  [Executor] Running: ${task.task_id} — ${task.description}`)
 
         // 检查依赖
-        const depsOk = await this.checkDependencies(task)
+        const depsOk = await this.checkDependencies(task, iter)
         if (!depsOk) {
           this.log(`  [Executor] ⏭ Skipped: dependencies not met`)
           continue
         }
 
-        const execResult = await this.executorAgent.run({ task }, this.ctx(loopId, iter, goal))
-        if (!execResult.success) {
-          this.log(`  [Executor] ✗ Failed: ${execResult.error}`)
-          iterFailures++
-          consecutiveFailures++
-          continue
-        }
-
-        const taskResult = execResult.data.task_result as TaskResult
-        this.log(`  [Executor] ✓ ${taskResult.status}`)
-
-        // Step 4: CriticAgent — 对抗验证
-        this.log(`  [Critic] Evaluating (3 perspectives)...`)
-        const criticResult = await this.criticAgent.run(
-          { task_result: taskResult },
-          this.ctx(loopId, iter, goal),
-        )
-
-        if (!criticResult.success) {
-          this.log(`  [Critic] ✗ Evaluation failed: ${criticResult.error}`)
-          iterFailures++
-          continue
-        }
-
-        const feedback = criticResult.data.feedback as Feedback
-        this.config.onTaskComplete(task.task_id, taskResult, feedback)
-
-        if (feedback.passed) {
-          this.log(`  [Critic] ✓ PASSED (${feedback.perspectives.filter(p => p.passed).length}/3 perspectives)`)
-          consecutiveFailures = 0
+        // 执行 + 验证（带重试）
+        const { success, retries } = await this.executeAndVerify(task, iter, goal, loopId)
+        if (success) {
+          this.log(`  ✓ ${task.task_id} passed (after ${retries} retries)`)
         } else {
-          this.log(`  [Critic] ✗ REJECTED: ${feedback.issues.join('; ')}`)
+          this.log(`  ✗ ${task.task_id} failed after ${retries} retries`)
           iterFailures++
-          consecutiveFailures++
-        }
-
-        if (feedback.improvements.length > 0) {
-          this.log(`  [Critic] Suggestions: ${feedback.improvements.join(', ')}`)
         }
       }
 
-      // Step 5: MemoryAgent — 沉淀
+      // Step 4: MemoryAgent — 沉淀
       this.log('\n[MemoryAgent] Saving experience...')
-      await this.memoryAgent.run({}, this.ctx(loopId, iter, goal))
+      await this.memoryAgent.run({ iteration: iter }, this.ctx(loopId, iter, goal))
 
-      // Step 6: MonitorAgent — 监控
+      // Step 5: MonitorAgent — 监控
       this.log('[MonitorAgent] Generating report...')
-      const monitorResult = await this.monitorAgent.run({}, this.ctx(loopId, iter, goal))
+      const monitorResult = await this.monitorAgent.run({ iteration: iter }, this.ctx(loopId, iter, goal))
       if (monitorResult.success) {
         const report = monitorResult.data.report as SystemReport
         this.config.onIterationEnd(iter, report)
         this.log(`[Monitor] Tasks: ${report.completed}/${report.total_tasks} completed, ${report.failed} failed`)
+        this.log(`[Monitor] Tokens: ${report.total_tokens}, Duration: ${report.total_duration_ms}ms`)
         if (report.alerts.length > 0) {
           this.log(`[Monitor] ⚠ Alerts: ${report.alerts.join('; ')}`)
         }
@@ -197,19 +205,64 @@ export class LoopController {
 
       // 终止条件检查
       if (iterFailures === 0 && tasks.length > 0) {
-        const allDone = await this.allTasksCompleted()
-        if (allDone) {
+        const iterDone = await this.allTasksCompleted(iter)
+        if (iterDone) {
           this.log('\n✓ All tasks completed successfully!')
-          return this.terminate(loopId, 'completed', iter, startedAt)
+          return this.terminate(loopId, 'completed', iter, startedAt, undefined, goal)
         }
-      }
-
-      if (consecutiveFailures >= this.config.maxConsecutiveFailures) {
-        return this.terminate(loopId, 'failed', iter, startedAt, `${consecutiveFailures} consecutive failures`)
       }
     }
 
-    return this.terminate(loopId, 'max_iterations', this.config.maxIterations, startedAt)
+    return this.terminate(loopId, 'max_iterations', this.config.maxIterations, startedAt, undefined, goal)
+  }
+
+  private async executeAndVerify(
+    task: Task,
+    iteration: number,
+    goal: StandardGoal,
+    loopId: string,
+  ): Promise<{ success: boolean; retries: number }> {
+    const ctx = this.ctx(loopId, iteration, goal)
+
+    for (let retry = 0; retry <= this.config.maxTaskRetries; retry++) {
+      if (retry > 0) {
+        this.log(`  [Retry ${retry}/${this.config.maxTaskRetries}] Re-executing ${task.task_id}`)
+      }
+
+      // 执行
+      const execResult = await this.executorAgent.run({ task, iteration }, ctx)
+      if (!execResult.success) {
+        this.log(`  [Executor] ✗ Failed: ${execResult.error}`)
+        continue
+      }
+
+      const taskResult = execResult.data.task_result as TaskResult
+      this.log(`  [Executor] ✓ ${taskResult.status}`)
+
+      // 对抗验证
+      this.log(`  [Critic] Evaluating (3 perspectives)...`)
+      const criticResult = await this.criticAgent.run({ task_result: taskResult, iteration }, ctx)
+
+      if (!criticResult.success) {
+        this.log(`  [Critic] ✗ Evaluation failed: ${criticResult.error}`)
+        continue
+      }
+
+      const feedback = criticResult.data.feedback as Feedback
+      this.config.onTaskComplete(task.task_id, taskResult, feedback)
+
+      if (feedback.passed) {
+        this.log(`  [Critic] ✓ PASSED (${feedback.perspectives.filter(p => p.passed).length}/3 perspectives)`)
+        return { success: true, retries: retry }
+      } else {
+        this.log(`  [Critic] ✗ REJECTED: ${feedback.issues.join('; ')}`)
+        if (feedback.improvements.length > 0) {
+          this.log(`  [Critic] Suggestions: ${feedback.improvements.join(', ')}`)
+        }
+      }
+    }
+
+    return { success: false, retries: this.config.maxTaskRetries }
   }
 
   private ctx(loopId: string, iteration: number, goal?: StandardGoal): AgentContext {
@@ -222,16 +275,16 @@ export class LoopController {
     }
   }
 
-  private async checkDependencies(task: Task): Promise<boolean> {
+  private async checkDependencies(task: Task, iteration: number): Promise<boolean> {
     for (const depId of task.dependencies) {
-      const dep = await this.store.get<Task>('tasks', depId)
+      const dep = await this.store.get<Task>(`tasks_${iteration}`, depId)
       if (!dep || dep.status !== 'completed') return false
     }
     return true
   }
 
-  private async allTasksCompleted(): Promise<boolean> {
-    const tasks = await this.store.list<Task>('tasks')
+  private async allTasksCompleted(iteration: number): Promise<boolean> {
+    const tasks = await this.store.list<Task>(`tasks_${iteration}`)
     return tasks.length > 0 && tasks.every(t => t.status === 'completed')
   }
 
@@ -252,6 +305,9 @@ export class LoopController {
       started_at: startedAt,
       updated_at: new Date().toISOString(),
     }
+
+    // 持久化最终状态
+    this.store.set('loops', loopId, state).catch(() => {})
 
     this.config.onLoopComplete(state)
 

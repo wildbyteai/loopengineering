@@ -17,7 +17,7 @@ allowed-tools: [Read, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList
 
 用户给出的目标：$ARGUMENTS
 
-### Phase 1: 目标标准化 (GoalAgent)
+### Phase 1: 目标标准化
 
 将用户的目标解析为结构化格式：
 - **goal**: 一句话描述要做什么
@@ -25,23 +25,25 @@ allowed-tools: [Read, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList
 - **success_criteria**: 可验证的成功标准
 - **priority**: high/medium/low
 
-### Phase 2: 规划 (PlannerAgent)
+### Phase 2: 规划（带依赖排序）
 
 将目标拆解为可独立执行、可独立验证的子任务。每个任务必须：
 - 有明确的输入和输出
 - 可以独立验证是否完成
 - 依赖关系必须是显式的（不能靠隐式推断）
+- 按依赖拓扑排序后执行（DAG 排序）
 - 最多 10 个子任务
 
-### Phase 3: 执行 (ExecutorAgent)
+### Phase 3: 执行（带重试）
 
-对每个子任务：
-1. 创建 TaskCreate 记录
+对每个子任务（按拓扑顺序）：
+1. 检查依赖是否全部完成
 2. 使用 Agent 工具执行任务
-3. 记录结果
-4. 更新 TaskUpdate 状态
+3. 对抗验证（见 Phase 4）
+4. 如果验证失败，重试最多 2 次
+5. 记录结果和 token 消耗
 
-### Phase 4: 对抗验证 (CriticAgent)
+### Phase 4: 对抗验证
 
 **这是 Loop Engineering 的核心。** 对每个执行结果，用 3 个独立视角验证：
 
@@ -51,30 +53,33 @@ allowed-tools: [Read, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList
 
 每个视角独立评估，2/3 通过才算通过。**默认拒绝不确定的结果。**
 
-如果验证失败：
-- 记录失败原因
-- 重新执行该任务（最多重试 2 次）
-- 如果仍然失败，报告给用户
+如果验证失败且重试耗尽：
+- 记录失败原因和改进建议
+- 继续执行下一个任务
+- 失败率超过 50% 时触发告警
 
-### Phase 5: 记忆沉淀 (MemoryAgent)
+### Phase 5: 记忆沉淀
 
 每轮结束后：
 - 记录哪些任务成功了、哪些失败了
 - 记录失败的原因和改进方案
-- 将经验写入项目的 memory 文件（如果存在）
+- 用关键词索引存储，支持后续语义检索
+- 下一轮规划前先查询历史记忆
 
-### Phase 6: 监控 (MonitorAgent)
+### Phase 6: 监控
 
 每轮结束后报告：
 - 完成率：已完成/总任务数
 - 失败率：失败/总任务数
+- Token 消耗和执行时长
 - 异常：连续失败、长时间无进展
 
 ## 终止条件
 
 - ✅ 所有任务通过对抗验证 → 报告成功
 - ❌ 连续 3 次规划失败 → 报告失败
-- ⏱ 达到最大迭代次数（默认 5 轮）→ 报告超时
+- ⏱ 达到最大迭代次数（默认 10 轮）→ 报告超时
+- 📋 规划返回空任务列表 → 视为目标已满足
 
 ## 输出格式
 
@@ -85,10 +90,11 @@ allowed-tools: [Read, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList
 
 ### 任务状态
 - ✅ [task_id] 描述 — PASSED (3/3 perspectives)
-- ❌ [task_id] 描述 — REJECTED: 原因
+- ❌ [task_id] 描述 — REJECTED: 原因 (retry 1/2)
 
 ### 监控
 - 完成率: X/Y (Z%)
+- Token 消耗: N
 - 迭代次数: N
 
 ### 下一步
@@ -101,3 +107,5 @@ allowed-tools: [Read, Write, Edit, Bash, Agent, TaskCreate, TaskUpdate, TaskList
 - 不要假装验证通过了。如果不确定，默认拒绝。
 - 每轮都要有明确的进展，不要空转。
 - 如果用户的目标太模糊，先问清楚再开始。
+- 任务失败后要重试（最多 2 次），不要一次失败就放弃。
+- 规划前先查询历史记忆，避免重复失败的路径。

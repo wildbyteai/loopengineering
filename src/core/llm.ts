@@ -13,14 +13,22 @@ export interface LLMOptions {
   system?: string
 }
 
+export interface LLMUsage {
+  input_tokens: number
+  output_tokens: number
+}
+
+export interface LLMResponse {
+  text: string
+  usage: LLMUsage
+}
+
 export interface LLMProvider {
-  chat(messages: Message[], options?: LLMOptions): Promise<string>
+  chat(messages: Message[], options?: LLMOptions): Promise<LLMResponse>
+  chatText(messages: Message[], options?: LLMOptions): Promise<string>
   chatJSON<T>(messages: Message[], schema: ZodSchema<T>, options?: LLMOptions): Promise<T>
 }
 
-// ============================================================
-// ClaudeProvider — Anthropic SDK
-// ============================================================
 export class ClaudeProvider implements LLMProvider {
   private client: Anthropic
   private defaultModel: string
@@ -30,7 +38,7 @@ export class ClaudeProvider implements LLMProvider {
     this.defaultModel = config.model ?? 'claude-sonnet-4-6'
   }
 
-  async chat(messages: Message[], options?: LLMOptions): Promise<string> {
+  async chat(messages: Message[], options?: LLMOptions): Promise<LLMResponse> {
     const system = options?.system
     const response = await this.client.messages.create({
       model: options?.model ?? this.defaultModel,
@@ -44,17 +52,27 @@ export class ClaudeProvider implements LLMProvider {
     if (block?.type !== 'text') {
       throw new Error(`Unexpected response type: ${block?.type}`)
     }
-    return block.text
+    return {
+      text: block.text,
+      usage: {
+        input_tokens: response.usage.input_tokens,
+        output_tokens: response.usage.output_tokens,
+      },
+    }
+  }
+
+  async chatText(messages: Message[], options?: LLMOptions): Promise<string> {
+    const resp = await this.chat(messages, options)
+    return resp.text
   }
 
   async chatJSON<T>(messages: Message[], schema: ZodSchema<T>, options?: LLMOptions): Promise<T> {
-    const raw = await this.chat(messages, {
+    const resp = await this.chat(messages, {
       ...options,
-      system: (options?.system ?? '') + '\n\nYou must respond with valid JSON only. No markdown fences, no explanation, just the JSON object.',
+      system: (options?.system ?? '') + '\n\nRespond with valid JSON only. No markdown fences.',
     })
 
-    // Extract JSON from potential markdown fences
-    let jsonStr = raw.trim()
+    let jsonStr = resp.text.trim()
     const fenceMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/)
     if (fenceMatch) {
       jsonStr = fenceMatch[1].trim()
@@ -65,29 +83,34 @@ export class ClaudeProvider implements LLMProvider {
   }
 }
 
-// ============================================================
-// MockProvider — 用于测试
-// ============================================================
 type MockResponseFn = (messages: Message[], options?: LLMOptions) => string
 
 export class MockProvider implements LLMProvider {
   private responses: MockResponseFn[]
+  private callIndex = 0
 
   constructor(responses: MockResponseFn[]) {
     this.responses = responses
   }
 
-  private callIndex = 0
-
-  async chat(messages: Message[], options?: LLMOptions): Promise<string> {
+  async chat(messages: Message[], options?: LLMOptions): Promise<LLMResponse> {
     const fn = this.responses[this.callIndex % this.responses.length]
     this.callIndex++
-    return fn(messages, options)
+    const text = fn(messages, options)
+    return {
+      text,
+      usage: { input_tokens: 100, output_tokens: 50 },
+    }
+  }
+
+  async chatText(messages: Message[], options?: LLMOptions): Promise<string> {
+    const resp = await this.chat(messages, options)
+    return resp.text
   }
 
   async chatJSON<T>(messages: Message[], schema: ZodSchema<T>, options?: LLMOptions): Promise<T> {
-    const raw = await this.chat(messages, options)
-    const parsed = JSON.parse(raw)
+    const resp = await this.chat(messages, options)
+    const parsed = JSON.parse(resp.text)
     return schema.parse(parsed)
   }
 }

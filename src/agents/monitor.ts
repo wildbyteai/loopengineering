@@ -5,14 +5,17 @@ export class MonitorAgent extends BaseAgent {
   readonly name = 'MonitorAgent'
 
   async run(
-    _input: Record<string, unknown>,
+    input: { iteration: number },
     ctx: AgentContext,
   ): Promise<AgentResult> {
     const start = Date.now()
+    const { iteration } = input
 
     try {
-      const tasks = await ctx.store.list<Task>('tasks')
-      const results = await ctx.store.list<{ status: string; metadata?: { tokens_used?: number; duration_ms?: number } }>('task_results')
+      const tasks = await ctx.store.list<Task>(`tasks_${iteration}`)
+      const results = await ctx.store.list<{ status: string; metadata?: { tokens_used?: number; duration_ms?: number } }>(
+        `task_results_${iteration}`,
+      )
 
       const total = tasks.length
       const completed = tasks.filter(t => t.status === 'completed').length
@@ -25,19 +28,18 @@ export class MonitorAgent extends BaseAgent {
 
       const alerts: string[] = []
 
-      // 异常检测
       if (total > 0 && failed / total > 0.5) {
         alerts.push(`High failure rate: ${failed}/${total} tasks failed (${Math.round(failed / total * 100)}%)`)
       }
       if (inProgress > 3) {
         alerts.push(`Too many in-progress tasks: ${inProgress} (possible deadlock)`)
       }
-      if (ctx.iteration >= ctx.goal.constraints.length * 3 && completed < total * 0.3) {
-        alerts.push('Slow progress: many iterations with low completion rate')
+      if (iteration >= 5 && completed < total * 0.3) {
+        alerts.push('Slow progress: 5+ iterations with low completion rate')
       }
 
       const report: SystemReport = {
-        iteration: ctx.iteration,
+        iteration,
         total_tasks: total,
         completed,
         failed,
@@ -50,8 +52,7 @@ export class MonitorAgent extends BaseAgent {
         created_at: new Date().toISOString(),
       }
 
-      // 存储报告
-      await ctx.store.set('reports', `iter-${ctx.iteration}`, report)
+      await ctx.store.set('reports', `iter-${iteration}`, report)
 
       return this.ok({ report }, undefined, this.timing(start))
     } catch (err) {

@@ -5,7 +5,6 @@ import { rm } from 'fs/promises'
 
 const TEST_DATA_DIR = './data-test'
 
-// Mock responses for each agent
 function mockGoalResponse(): string {
   return JSON.stringify({
     goal: 'Build a simple calculator CLI tool',
@@ -42,7 +41,6 @@ function mockPlannerResponse(): string {
       ],
     })
   }
-  // Second iteration: all done
   return JSON.stringify({ tasks: [] })
 }
 
@@ -73,12 +71,10 @@ function mockCriticResponse(): string {
 async function runTest(): Promise<void> {
   console.log('🧪 LoopEngineering-Core Integration Test\n')
 
-  // Cleanup
   await rm(TEST_DATA_DIR, { recursive: true, force: true })
 
   const store = new JsonFileStore(TEST_DATA_DIR)
 
-  // Build mock provider with sequential responses
   const mockResponses = [
     mockGoalResponse,       // GoalAgent
     mockPlannerResponse,    // PlannerAgent
@@ -94,9 +90,7 @@ async function runTest(): Promise<void> {
     mockCriticResponse,     // Critic t3 (correctness)
     mockCriticResponse,     // Critic t3 (completeness)
     mockCriticResponse,     // Critic t3 (robustness)
-    // MemoryAgent (no LLM call)
-    // MonitorAgent (no LLM call)
-    mockPlannerResponse,    // PlannerAgent (iteration 2)
+    mockPlannerResponse,    // PlannerAgent (iteration 2 — empty)
   ]
 
   const llm = new MockProvider(
@@ -113,18 +107,17 @@ async function runTest(): Promise<void> {
 
   const result = await loop.run('Build a simple calculator CLI tool in TypeScript')
 
-  // Verify
   console.log('\n--- Verification ---')
   console.log(`Loop status: ${result.status}`)
   console.log(`Iterations: ${result.iteration}`)
 
-  const tasks = await store.list('tasks')
-  console.log(`Tasks in store: ${tasks.length}`)
+  const tasks = await store.list('tasks_1')
+  console.log(`Tasks in iteration 1: ${tasks.length}`)
 
-  const results = await store.list('task_results')
+  const results = await store.list('task_results_1')
   console.log(`Task results: ${results.length}`)
 
-  const feedback = await store.list('feedback')
+  const feedback = await store.list('feedback_1')
   console.log(`Feedback entries: ${feedback.length}`)
 
   const memory = await store.list('memory')
@@ -133,13 +126,16 @@ async function runTest(): Promise<void> {
   const reports = await store.list('reports')
   console.log(`Monitor reports: ${reports.length}`)
 
+  const loops = await store.list('loops')
+  console.log(`Loop states persisted: ${loops.length}`)
+
   if (result.status === 'completed') {
     console.log('\n🎉 All tests passed!')
   } else {
     console.log(`\n⚠️  Loop ended with status: ${result.status}`)
+    process.exit(1)
   }
 
-  // Cleanup
   await rm(TEST_DATA_DIR, { recursive: true, force: true })
 }
 

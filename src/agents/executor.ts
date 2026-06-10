@@ -13,38 +13,39 @@ export class ExecutorAgent extends BaseAgent {
   readonly name = 'ExecutorAgent'
 
   async run(
-    input: { task: Task },
+    input: { task: Task; iteration: number },
     ctx: AgentContext,
   ): Promise<AgentResult> {
     const start = Date.now()
-    const { task } = input
+    const { task, iteration } = input
+    const taskCollection = `tasks_${iteration}`
+    const resultCollection = `task_results_${iteration}`
 
     try {
-      // 标记任务为 in_progress
-      await ctx.store.set('tasks', task.task_id, {
+      // 标记 in_progress
+      await ctx.store.set(taskCollection, task.task_id, {
         ...task,
         status: 'in_progress',
         updated_at: new Date().toISOString(),
       })
 
       const { messages, system } = executorPrompt(task, ctx.goal)
-      const parsed = await ctx.llm.chatJSON(messages, ExecutorOutputSchema, { system })
+      const resp = await ctx.llm.chat(messages, { system })
+      const parsed = ExecutorOutputSchema.parse(JSON.parse(resp.text))
 
       const taskResult: TaskResult = {
         task_id: task.task_id,
         output: parsed.output,
         status: parsed.status,
         metadata: {
+          tokens_used: resp.usage.input_tokens + resp.usage.output_tokens,
           duration_ms: this.timing(start),
         },
         created_at: new Date().toISOString(),
       }
 
-      // 写入结果
-      await ctx.store.set('task_results', task.task_id, taskResult)
-
-      // 更新任务状态
-      await ctx.store.set('tasks', task.task_id, {
+      await ctx.store.set(resultCollection, task.task_id, taskResult)
+      await ctx.store.set(taskCollection, task.task_id, {
         ...task,
         status: parsed.status === 'success' ? 'completed' : 'failed',
         updated_at: new Date().toISOString(),
@@ -52,12 +53,11 @@ export class ExecutorAgent extends BaseAgent {
 
       return this.ok(
         { task_result: taskResult, reasoning: parsed.reasoning },
-        undefined,
+        resp.usage.input_tokens + resp.usage.output_tokens,
         this.timing(start),
       )
     } catch (err) {
-      // 标记任务失败
-      await ctx.store.set('tasks', task.task_id, {
+      await ctx.store.set(taskCollection, task.task_id, {
         ...task,
         status: 'failed',
         updated_at: new Date().toISOString(),

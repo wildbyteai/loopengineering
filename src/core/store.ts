@@ -7,6 +7,7 @@ export interface Store {
   list<T>(collection: string, filter?: (item: T) => boolean): Promise<T[]>
   delete(collection: string, id: string): Promise<void>
   append<T>(collection: string, id: string, value: T): Promise<void>
+  clearCache(): void
 }
 
 interface StoreData {
@@ -23,7 +24,8 @@ export class JsonFileStore implements Store {
   }
 
   private filePath(collection: string): string {
-    return `${this.basePath}/${collection}.json`
+    const sanitized = collection.replace(/[^a-zA-Z0-9_-]/g, '_')
+    return `${this.basePath}/${sanitized}.json`
   }
 
   private async ensureDir(path: string): Promise<void> {
@@ -31,15 +33,14 @@ export class JsonFileStore implements Store {
   }
 
   private async readCollection(collection: string): Promise<StoreData> {
-    const cached = this.cache.get(collection)
-    if (cached) return cached
-
     try {
       const raw = await readFile(this.filePath(collection), 'utf-8')
       const data = JSON.parse(raw) as StoreData
       this.cache.set(collection, data)
       return data
     } catch {
+      const cached = this.cache.get(collection)
+      if (cached) return cached
       const empty: StoreData = {}
       this.cache.set(collection, empty)
       return empty
@@ -57,7 +58,7 @@ export class JsonFileStore implements Store {
   private async withLock<T>(collection: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.writeLocks.get(collection) ?? Promise.resolve()
     const current = prev.then(fn, fn)
-    this.writeLocks.set(collection, current.then(() => {}))
+    this.writeLocks.set(collection, current.then(() => {}, () => {}))
     return current
   }
 
@@ -89,12 +90,19 @@ export class JsonFileStore implements Store {
     })
   }
 
-  async append<T>(
-    collection: string,
-    id: string,
-    value: T,
-  ): Promise<void> {
-    await this.set(collection, id, value)
+  async append<T>(collection: string, id: string, value: T): Promise<void> {
+    await this.withLock(collection, async () => {
+      const data = await this.readCollection(collection)
+      const existing = data[id]
+      if (Array.isArray(existing)) {
+        existing.push(value)
+      } else if (existing === undefined || existing === null) {
+        data[id] = [value]
+      } else {
+        data[id] = [existing, value]
+      }
+      await this.writeCollection(collection, data)
+    })
   }
 
   clearCache(): void {
